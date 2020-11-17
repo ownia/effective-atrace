@@ -233,6 +233,7 @@ static const char* g_debugAppCmdLine = "";
 static const char* g_outputFile = nullptr;
 // #ifdef VENDOR_EDIT
 static const char* g_currentTracer = nullptr;
+static const char* g_traceOptions = nullptr;
 // #endif /*VENDOR_EDIT*/
 
 /* Global state */
@@ -293,6 +294,9 @@ static const char* k_traceMarkerPath =
 // #ifdef VENDOR_EDIT
 static const char* k_funcStackTracePath =
     "options/func_stack_trace";
+
+static const char* k_traceOptionsPath =
+    "trace_options";
 // #endif /*VENDOR_EDIT*/
 
 // Check whether a file exists.
@@ -760,6 +764,21 @@ static bool setKernelTraceFuncs(const char* funcs)
     return ok;
 }
 
+// #ifdef VENDOR_EDIT
+static bool setTraceOptionsState(const char* options)
+{
+    bool ok = true;
+    char* myOptions = strdup(options);
+    char* option = strtok(myOptions, ",");
+    while(option) {
+        ok &= appendStr(k_traceOptionsPath, option);
+        option = strtok(NULL, ",");
+    }
+    free(myOptions);
+    return ok;
+}
+// #endif /*VENDOR_EDIT*/
+
 static bool setCategoryEnable(const char* name, bool enable)
 {
     for (size_t i = 0; i < arraysize(k_categories); i++) {
@@ -920,7 +939,7 @@ static void cleanUpKernelTracing()
     setUserInitiatedTraceProperty(false);
     
     // #ifdef VENDOR_EDIT
-    if (!strcmp(g_currentTracer, function)) {
+    if (!strcmp(g_currentTracer, "function")) {
         setKernelOptionEnable(k_funcStackTracePath, false);
     }
     // #endif /*VENDOR_EDIT*/
@@ -1099,7 +1118,16 @@ static void listSupportedCategories()
 // #ifdef VENDOR_EDIT
 static void listTraceOptions()
 {
-    printf("listTraceOptions\n");
+    std::string buf;
+    if (!android::base::ReadFileToString(g_traceFolder + k_traceOptionsPath, &buf)) {
+         fprintf(stderr, "error opening %s: %s (%d)\n", k_traceOptionsPath,
+            strerror(errno), errno);
+         goto out;
+    }
+    printf("%s", buf.c_str());
+
+out:
+    return;
 }
 // #endif /*VENDOR_EDIT*/
 
@@ -1119,6 +1147,12 @@ static void showHelp(const char *cmd)
                     "  -s N            sleep for N seconds before tracing [default 0]\n"
                     "  -t N            trace for N seconds [default 5]\n"
                     "  -z              compress the trace dump\n"
+                    // #ifdef VENDOR_EDIT
+                    "  -m tracename    determine the current tracer by the tracename\n"
+                    "  -d optionname,...\n"
+                    "                  change the listed trace options\n"
+                    "  -D              change the listed trace options without actual tracing\n"
+                    // #endif /*VENDOR_EDIT*/
                     "  --async_start   start circular trace and return immediately\n"
                     "  --async_dump    dump the current contents of circular trace buffer\n"
                     "  --async_stop    stop tracing and dump the current contents of circular\n"
@@ -1129,6 +1163,10 @@ static void showHelp(const char *cmd)
                     "                    CPU performance, like pagecache usage.\n"
                     "  --list_categories\n"
                     "                  list the available tracing categories\n"
+                    // #ifdef VENDOR_EDIT
+                    "  --list_trace_options\n"
+                    "                  list the current trace options and states\n"
+                    // #endif /*VENDOR_EDIT*/
                     " -o filename      write the trace to the specified file instead\n"
                     "                    of stdout.\n"
             );
@@ -1166,7 +1204,8 @@ int main(int argc, char **argv)
     bool traceStream = false;
     bool onlyUserspace = false;
     // #ifdef VENDOR_EDIT
-    bool showTraceOptions = false;
+    bool changeTraceOptions = false;
+    bool onlyChangeTraceOptions = false;
     // #endif /*VENDOR_EDIT*/
 
     if (argc == 2 && 0 == strcmp(argv[1], "--help")) {
@@ -1196,7 +1235,7 @@ int main(int argc, char **argv)
         };
 
         // #ifdef VENDOR_EDIT
-        ret = getopt_long(argc, argv, "a:b:cf:k:ns:t:zo:m:",
+        ret = getopt_long(argc, argv, "a:b:cf:k:ns:t:zo:m:d:D",
         // #endif /*VENDOR_EDIT*/
                           long_options, &option_index);
 
@@ -1254,7 +1293,15 @@ int main(int argc, char **argv)
             // #ifdef VENDOR_EDIT
             case 'm':
                 g_currentTracer = optarg;
-                printf("current tracer is: %s\n", g_currentTracer);
+            break;
+
+            case 'd':
+                g_traceOptions = optarg;
+                changeTraceOptions = true;
+            break;
+            
+            case 'D':
+                onlyChangeTraceOptions = true;
             break;
             // #endif /*VENDOR_EDIT*/
 
@@ -1295,6 +1342,15 @@ int main(int argc, char **argv)
         }
     }
 
+    // #ifdef VENDOR_EDIT
+    if(onlyChangeTraceOptions && changeTraceOptions) {
+        return setTraceOptionsState(g_traceOptions) ? 1 : 0;
+    } else if(onlyChangeTraceOptions) {
+        printf("lack of trace options\n");
+        return 0;
+    }
+    // #endif /*VENDOR_EDIT*/
+
     if (onlyUserspace) {
         if (!async || !(traceStart || traceStop)) {
             fprintf(stderr, "--only_userspace can only be used with "
@@ -1317,6 +1373,11 @@ int main(int argc, char **argv)
 
     if (ok && traceStart && !onlyUserspace) {
         ok &= setUpKernelTracing();
+        // #ifdef VENDOR_EDIT
+        if(changeTraceOptions) {
+            ok &= setTraceOptionsState(g_traceOptions);
+        }
+        // #endif /*VENDOR_EDIT*/
         ok &= startTrace();
     }
 
