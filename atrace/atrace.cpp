@@ -231,6 +231,9 @@ static const char* g_categoriesFile = NULL;
 static const char* g_kernelTraceFuncs = NULL;
 static const char* g_debugAppCmdLine = "";
 static const char* g_outputFile = nullptr;
+// #ifdef VENDOR_EDIT
+static const char* g_currentTracer = nullptr;
+// #endif /*VENDOR_EDIT*/
 
 /* Global state */
 static bool g_tracePdx = false;
@@ -286,6 +289,11 @@ static const char* k_traceStreamPath =
 
 static const char* k_traceMarkerPath =
     "trace_marker";
+
+// #ifdef VENDOR_EDIT
+static const char* k_funcStackTracePath =
+    "options/func_stack_trace";
+// #endif /*VENDOR_EDIT*/
 
 // Check whether a file exists.
 static bool fileExists(const char* filename) {
@@ -718,11 +726,20 @@ static bool setKernelTraceFuncs(const char* funcs)
         }
     } else {
         // Enable kernel function tracing.
-        ok &= writeStr(k_currentTracerPath, "function_graph");
-        ok &= setKernelOptionEnable(k_funcgraphAbsTimePath, true);
-        ok &= setKernelOptionEnable(k_funcgraphCpuPath, true);
-        ok &= setKernelOptionEnable(k_funcgraphProcPath, true);
-        ok &= setKernelOptionEnable(k_funcgraphFlatPath, true);
+        // #ifdef VENDOR_EDIT
+        if (!g_currentTracer || !strcmp(g_currentTracer, "function_graph")) {
+            ok &= writeStr(k_currentTracerPath, "function_graph");
+            ok &= setKernelOptionEnable(k_funcgraphAbsTimePath, true);
+            ok &= setKernelOptionEnable(k_funcgraphCpuPath, true);
+            ok &= setKernelOptionEnable(k_funcgraphProcPath, true);
+            ok &= setKernelOptionEnable(k_funcgraphFlatPath, true);
+        } else if (!strcmp(g_currentTracer, "function")) {
+            ok &= writeStr(k_currentTracerPath, g_currentTracer);
+            ok &= setKernelOptionEnable(k_funcStackTracePath, true);
+        } else {
+            ok &= writeStr(k_currentTracerPath, g_currentTracer);
+        }
+        // #endif /*VENDOR_EDIT*/
 
         // Set the requested filter functions.
         ok &= truncateFile(k_ftraceFilterPath);
@@ -901,6 +918,12 @@ static void cleanUpKernelTracing()
     setPrintTgidEnableIfPresent(false);
     setKernelTraceFuncs(NULL);
     setUserInitiatedTraceProperty(false);
+    
+    // #ifdef VENDOR_EDIT
+    if (!strcmp(g_currentTracer, function)) {
+        setKernelOptionEnable(k_funcStackTracePath, false);
+    }
+    // #endif /*VENDOR_EDIT*/
 }
 
 // Enable tracing in the kernel.
@@ -1073,6 +1096,13 @@ static void listSupportedCategories()
     }
 }
 
+// #ifdef VENDOR_EDIT
+static void listTraceOptions()
+{
+    printf("listTraceOptions\n");
+}
+// #endif /*VENDOR_EDIT*/
+
 // Print the command usage help to stderr.
 static void showHelp(const char *cmd)
 {
@@ -1135,6 +1165,9 @@ int main(int argc, char **argv)
     bool traceDump = true;
     bool traceStream = false;
     bool onlyUserspace = false;
+    // #ifdef VENDOR_EDIT
+    bool showTraceOptions = false;
+    // #endif /*VENDOR_EDIT*/
 
     if (argc == 2 && 0 == strcmp(argv[1], "--help")) {
         showHelp(argv[0]);
@@ -1156,10 +1189,15 @@ int main(int argc, char **argv)
             {"only_userspace",    no_argument, 0,  0 },
             {"list_categories",   no_argument, 0,  0 },
             {"stream",            no_argument, 0,  0 },
+            // #ifdef VENDOR_EDIT
+            {"list_trace_options", no_argument, 0,  0 },
+            // #endif /*VENDOR_EDIT*/
             {           0,                  0, 0,  0 }
         };
 
-        ret = getopt_long(argc, argv, "a:b:cf:k:ns:t:zo:",
+        // #ifdef VENDOR_EDIT
+        ret = getopt_long(argc, argv, "a:b:cf:k:ns:t:zo:m:",
+        // #endif /*VENDOR_EDIT*/
                           long_options, &option_index);
 
         if (ret < 0) {
@@ -1212,6 +1250,13 @@ int main(int argc, char **argv)
             case 'o':
                 g_outputFile = optarg;
             break;
+            
+            // #ifdef VENDOR_EDIT
+            case 'm':
+                g_currentTracer = optarg;
+                printf("current tracer is: %s\n", g_currentTracer);
+            break;
+            // #endif /*VENDOR_EDIT*/
 
             case 0:
                 if (!strcmp(long_options[option_index].name, "async_start")) {
@@ -1234,6 +1279,11 @@ int main(int argc, char **argv)
                 } else if (!strcmp(long_options[option_index].name, "list_categories")) {
                     listSupportedCategories();
                     exit(0);
+                // #ifdef VENDOR_EDIT
+                } else if (!strcmp(long_options[option_index].name, "list_trace_options")) {
+                    listTraceOptions();
+                    exit(0);
+                // #endif /*VENDOR_EDIT*/
                 }
             break;
 
