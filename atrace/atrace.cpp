@@ -56,6 +56,9 @@ using pdx::default_transport::ServiceUtility;
 using std::string;
 
 #define MAX_SYS_FILES 10
+// #ifdef VENDOR_EDIT
+#define MAX_FUNC_STACK (5)
+// #endif /*VENDOR_EDIT*/
 
 const char* k_traceTagsProperty = "debug.atrace.tags.enableflags";
 const char* k_userInitiatedTraceProperty = "debug.atrace.user_initiated";
@@ -297,6 +300,15 @@ static const char* k_funcStackTracePath =
 
 static const char* k_traceOptionsPath =
     "trace_options";
+
+static const char* k_availableTracersPath =
+    "available_tracers";
+
+static const char* k_dynFtraceTotalPath =
+    "dyn_ftrace_total_info";
+
+static const char* k_maxGraphDepthPath =
+    "max_graph_depth";
 // #endif /*VENDOR_EDIT*/
 
 // Check whether a file exists.
@@ -729,6 +741,23 @@ static bool setKernelTraceFuncs(const char* funcs)
             ok &= truncateFile(k_ftraceFilterPath);
         }
     } else {
+        // Set the requested filter functions.
+        ok &= truncateFile(k_ftraceFilterPath);
+        char* myFuncs = strdup(funcs);
+        char* func = strtok(myFuncs, ",");
+        int count = 1;
+        while (func) {
+            ok &= appendStr(k_ftraceFilterPath, func);
+            func = strtok(NULL, ",");
+            ++count;
+        }
+        free(myFuncs);
+
+        // Verify that the set functions are being traced.
+        if (ok) {
+            ok &= verifyKernelTraceFuncs(funcs);
+        }
+        
         // Enable kernel function tracing.
         // #ifdef VENDOR_EDIT
         if (!g_currentTracer || !strcmp(g_currentTracer, "function_graph")) {
@@ -739,26 +768,12 @@ static bool setKernelTraceFuncs(const char* funcs)
             ok &= setKernelOptionEnable(k_funcgraphFlatPath, true);
         } else if (!strcmp(g_currentTracer, "function")) {
             ok &= writeStr(k_currentTracerPath, g_currentTracer);
-            ok &= setKernelOptionEnable(k_funcStackTracePath, true);
+            // Limit the kernel functions that are recorded before enabling func_stack_trace
+            ok &= count > MAX_FUNC_STACK ? 1 : setKernelOptionEnable(k_funcStackTracePath, true);
         } else {
             ok &= writeStr(k_currentTracerPath, g_currentTracer);
         }
         // #endif /*VENDOR_EDIT*/
-
-        // Set the requested filter functions.
-        ok &= truncateFile(k_ftraceFilterPath);
-        char* myFuncs = strdup(funcs);
-        char* func = strtok(myFuncs, ",");
-        while (func) {
-            ok &= appendStr(k_ftraceFilterPath, func);
-            func = strtok(NULL, ",");
-        }
-        free(myFuncs);
-
-        // Verify that the set functions are being traced.
-        if (ok) {
-            ok &= verifyKernelTraceFuncs(funcs);
-        }
     }
 
     return ok;
@@ -1119,15 +1134,52 @@ static void listSupportedCategories()
 static void listTraceOptions()
 {
     std::string buf;
+    char* myList = nullptr;
+    char* list = nullptr;
     if (!android::base::ReadFileToString(g_traceFolder + k_traceOptionsPath, &buf)) {
          fprintf(stderr, "error opening %s: %s (%d)\n", k_traceOptionsPath,
             strerror(errno), errno);
          goto out;
     }
-    printf("%s", buf.c_str());
+    
+    myList = strdup(buf.c_str());
+    list = strtok(myList, "\n");    
+    while(list) {
+        if(!strncmp(list, "no", 2)) {
+            printf("  %15s - disable\n", list + 2);
+        } else {
+            printf("  %15s - enable\n", list);
+        }
+        list = strtok(NULL, "\n");
+    }
+    free(myList);
 
 out:
     return;
+}
+
+static void traceInfo()
+{
+    std::string buf[64];
+    std::string filePathList[3] = {k_availableTracersPath, k_dynFtraceTotalPath, k_maxGraphDepthPath};
+    for(int i = 0; i < 3; ++i) {
+        if (!android::base::ReadFileToString(g_traceFolder + filePathList[i], &buf[i])) {
+            fprintf(stderr, "error opening %s: %s (%d)\n", filePathList[i].c_str(),
+                strerror(errno), errno);
+        }
+    }
+    fprintf(stdout, "ATRACE INFO:\n\n"
+                    "available tracers include:\n"
+                    "    %s\n"
+                    "dynamic function trace total:\n"
+                    "    %s\n"
+                    "the max function_graph depth:\n"
+                    "    %s\n"
+                    "-----------------------------\n",
+                    buf[0].c_str(),
+                    buf[1].c_str(),
+                    strcmp(buf[2].c_str(), "0\n") == 0 ? "not limit depth\n" : buf[2].c_str()
+            );
 }
 // #endif /*VENDOR_EDIT*/
 
@@ -1235,7 +1287,7 @@ int main(int argc, char **argv)
         };
 
         // #ifdef VENDOR_EDIT
-        ret = getopt_long(argc, argv, "a:b:cf:k:ns:t:zo:m:d:D",
+        ret = getopt_long(argc, argv, "a:b:cf:k:ns:t:zo:m:d:iD",
         // #endif /*VENDOR_EDIT*/
                           long_options, &option_index);
 
@@ -1289,7 +1341,7 @@ int main(int argc, char **argv)
             case 'o':
                 g_outputFile = optarg;
             break;
-            
+
             // #ifdef VENDOR_EDIT
             case 'm':
                 g_currentTracer = optarg;
@@ -1299,7 +1351,12 @@ int main(int argc, char **argv)
                 g_traceOptions = optarg;
                 changeTraceOptions = true;
             break;
-            
+
+            case 'i':
+                traceInfo();
+                exit(0);
+            break;
+
             case 'D':
                 onlyChangeTraceOptions = true;
             break;
