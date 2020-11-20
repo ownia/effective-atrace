@@ -58,6 +58,7 @@ using std::string;
 #define MAX_SYS_FILES 10
 // #ifdef VENDOR_EDIT
 #define MAX_FUNC_STACK (5)
+#define CONFIG_DEV (1)
 // #endif /*VENDOR_EDIT*/
 
 const char* k_traceTagsProperty = "debug.atrace.tags.enableflags";
@@ -237,6 +238,7 @@ static const char* g_outputFile = nullptr;
 // #ifdef VENDOR_EDIT
 static const char* g_currentTracer = nullptr;
 static const char* g_traceOptions = nullptr;
+static bool g_enableFuncStack = false;
 // #endif /*VENDOR_EDIT*/
 
 /* Global state */
@@ -769,7 +771,9 @@ static bool setKernelTraceFuncs(const char* funcs)
         } else if (!strcmp(g_currentTracer, "function")) {
             ok &= writeStr(k_currentTracerPath, g_currentTracer);
             // Limit the kernel functions that are recorded before enabling func_stack_trace
-            ok &= count > MAX_FUNC_STACK ? 1 : setKernelOptionEnable(k_funcStackTracePath, true);
+            if(g_enableFuncStack) {
+                ok &= count > MAX_FUNC_STACK ? 1 : setKernelOptionEnable(k_funcStackTracePath, true);
+            }
         } else {
             ok &= writeStr(k_currentTracerPath, g_currentTracer);
         }
@@ -1287,7 +1291,7 @@ int main(int argc, char **argv)
         };
 
         // #ifdef VENDOR_EDIT
-        ret = getopt_long(argc, argv, "a:b:cf:k:ns:t:zo:m:d:iD",
+        ret = getopt_long(argc, argv, "a:b:cf:k:ns:t:zo:m:d:iDe",
         // #endif /*VENDOR_EDIT*/
                           long_options, &option_index);
 
@@ -1360,6 +1364,12 @@ int main(int argc, char **argv)
             case 'D':
                 onlyChangeTraceOptions = true;
             break;
+            
+#ifdef CONFIG_DEV
+            case 'e':
+                g_enableFuncStack = true;
+            break;
+#endif
             // #endif /*VENDOR_EDIT*/
 
             case 0:
