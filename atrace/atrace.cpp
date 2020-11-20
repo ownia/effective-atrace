@@ -55,7 +55,7 @@ using pdx::default_transport::ServiceUtility;
 
 using std::string;
 
-#define MAX_SYS_FILES 10
+#define MAX_SYS_FILES 11
 // #ifdef VENDOR_EDIT
 #define MAX_FUNC_STACK (5)
 #define CONFIG_DEV (1)
@@ -96,10 +96,7 @@ struct TracingCategory {
 
 /* Tracing categories */
 static const TracingCategory k_categories[] = {
-    { "gfx",        "Graphics",         ATRACE_TAG_GRAPHICS, {
-        { OPT,      "events/mdss/enable" },
-        { OPT,      "events/sde/enable" },
-    } },
+    { "gfx",        "Graphics",         ATRACE_TAG_GRAPHICS, { } },
     { "input",      "Input",            ATRACE_TAG_INPUT, { } },
     { "view",       "View System",      ATRACE_TAG_VIEW, { } },
     { "webview",    "WebView",          ATRACE_TAG_WEBVIEW, { } },
@@ -131,7 +128,11 @@ static const TracingCategory k_categories[] = {
         { OPT,      "events/sched/sched_blocked_reason/enable" },
         { OPT,      "events/sched/sched_cpu_hotplug/enable" },
         { OPT,      "events/sched/sched_pi_setprio/enable" },
+        { OPT,      "events/sched/sched_process_exit/enable" },
         { OPT,      "events/cgroup/enable" },
+        { OPT,      "events/oom/oom_score_adj_update/enable" },
+        { OPT,      "events/task/task_rename/enable" },
+        { OPT,      "events/task/task_newtask/enable" },
     } },
     { "irq",        "IRQ Events",   0, {
         { REQ,      "events/irq/enable" },
@@ -165,6 +166,9 @@ static const TracingCategory k_categories[] = {
         { OPT,      "events/clk/clk_disable/enable" },
         { OPT,      "events/clk/clk_enable/enable" },
         { OPT,      "events/power/cpu_frequency_limits/enable" },
+        { OPT,      "events/power/suspend_resume/enable" },
+        { OPT,      "events/cpuhp/cpuhp_enter/enable" },
+        { OPT,      "events/cpuhp/cpuhp_exit/enable" },
     } },
     { "membus",     "Memory Bus Utilization", 0, {
         { REQ,      "events/memory_bus/enable" },
@@ -191,10 +195,12 @@ static const TracingCategory k_categories[] = {
         { REQ,      "events/cpufreq_interactive/enable" },
     } },
     { "sync",       "Synchronization",  0, {
-        // before linux kernel 4.9
+        // linux kernel < 4.9
         { OPT,      "events/sync/enable" },
-        // starting in linux kernel 4.9
+        // linux kernel == 4.9.x
         { OPT,      "events/fence/enable" },
+        // linux kernel > 4.9
+        { OPT,      "events/dma_fence/enable" },
     } },
     { "workq",      "Kernel Workqueues", 0, {
         { REQ,      "events/workqueue/enable" },
@@ -212,6 +218,7 @@ static const TracingCategory k_categories[] = {
     { "binder_driver", "Binder Kernel driver", 0, {
         { REQ,      "events/binder/binder_transaction/enable" },
         { REQ,      "events/binder/binder_transaction_received/enable" },
+        { REQ,      "events/binder/binder_transaction_alloc_buf/enable" },
         { OPT,      "events/binder/binder_set_priority/enable" },
     } },
     { "binder_lock", "Binder global lock trace", 0, {
@@ -222,6 +229,10 @@ static const TracingCategory k_categories[] = {
     { "pagecache",  "Page cache", 0, {
         { REQ,      "events/filemap/enable" },
     } },
+    { "thermal",  "Thermal event", 0, {
+        { REQ,      "events/thermal/thermal_temperature/enable" },
+        { OPT,      "events/thermal/cdev_update/enable" },
+    } },
 };
 
 /* Command line options */
@@ -231,8 +242,8 @@ static int g_traceBufferSizeKB = 2048;
 static bool g_compress = false;
 static bool g_nohup = false;
 static int g_initialSleepSecs = 0;
-static const char* g_categoriesFile = NULL;
-static const char* g_kernelTraceFuncs = NULL;
+static const char* g_categoriesFile = nullptr;
+static const char* g_kernelTraceFuncs = nullptr;
 static const char* g_debugAppCmdLine = "";
 static const char* g_outputFile = nullptr;
 // #ifdef VENDOR_EDIT
@@ -427,15 +438,11 @@ static bool isCategorySupported(const TracingCategory& category)
     for (int i = 0; i < MAX_SYS_FILES; i++) {
         const char* path = category.sysfiles[i].path;
         bool req = category.sysfiles[i].required == REQ;
-        if (path != NULL) {
-            if (req) {
-                if (!fileIsWritable(path)) {
-                    return false;
-                } else {
-                    ok = true;
-                }
-            } else {
+        if (path != nullptr) {
+            if (fileIsWritable(path)) {
                 ok = true;
+            } else if (req) {
+                return false;
             }
         }
     }
@@ -452,7 +459,7 @@ static bool isCategorySupportedForRoot(const TracingCategory& category)
     for (int i = 0; i < MAX_SYS_FILES; i++) {
         const char* path = category.sysfiles[i].path;
         bool req = category.sysfiles[i].required == REQ;
-        if (path != NULL) {
+        if (path != nullptr) {
             if (req) {
                 if (!fileExists(path)) {
                     return false;
@@ -562,10 +569,10 @@ static bool pokeBinderServices()
     Vector<String16> services = sm->listServices();
     for (size_t i = 0; i < services.size(); i++) {
         sp<IBinder> obj = sm->checkService(services[i]);
-        if (obj != NULL) {
+        if (obj != nullptr) {
             Parcel data;
             if (obj->transact(IBinder::SYSPROPS_TRANSACTION, data,
-                    NULL, 0) != OK) {
+                    nullptr, 0) != OK) {
                 if (false) {
                     // XXX: For some reason this fails on tablets trying to
                     // poke the "phone" service.  It's not clear whether some
@@ -655,9 +662,9 @@ static bool setAppCmdlineProperty(char* cmdline)
 {
     int i = 0;
     char* start = cmdline;
-    while (start != NULL) {
+    while (start != nullptr) {
         char* end = strchr(start, ',');
-        if (end != NULL) {
+        if (end != nullptr) {
             *end = '\0';
             end++;
         }
@@ -687,7 +694,7 @@ static bool disableKernelTraceEvents() {
         const TracingCategory &c = k_categories[i];
         for (int j = 0; j < MAX_SYS_FILES; j++) {
             const char* path = c.sysfiles[j].path;
-            if (path != NULL && fileIsWritable(path)) {
+            if (path != nullptr && fileIsWritable(path)) {
                 ok &= setKernelOptionEnable(path, false);
             }
         }
@@ -723,7 +730,7 @@ static bool verifyKernelTraceFuncs(const char* funcs)
                 ok = false;
             }
         }
-        func = strtok(NULL, ",");
+        func = strtok(nullptr, ",");
     }
     free(myFuncs);
     return ok;
@@ -734,7 +741,7 @@ static bool setKernelTraceFuncs(const char* funcs)
 {
     bool ok = true;
 
-    if (funcs == NULL || funcs[0] == '\0') {
+    if (funcs == nullptr || funcs[0] == '\0') {
         // Disable kernel function tracing.
         if (fileIsWritable(k_currentTracerPath)) {
             ok &= writeStr(k_currentTracerPath, "nop");
@@ -750,7 +757,7 @@ static bool setKernelTraceFuncs(const char* funcs)
         int count = 1;
         while (func) {
             ok &= appendStr(k_ftraceFilterPath, func);
-            func = strtok(NULL, ",");
+            func = strtok(nullptr, ",");
             ++count;
         }
         free(myFuncs);
@@ -791,7 +798,7 @@ static bool setTraceOptionsState(const char* options)
     char* option = strtok(myOptions, ",");
     while(option) {
         ok &= appendStr(k_traceOptionsPath, option);
-        option = strtok(NULL, ",");
+        option = strtok(nullptr, ",");
     }
     free(myOptions);
     return ok;
@@ -827,7 +834,7 @@ static bool setCategoriesEnableFromFile(const char* categories_file)
     if (!categories_file) {
         return true;
     }
-    Tokenizer* tokenizer = NULL;
+    Tokenizer* tokenizer = nullptr;
     if (Tokenizer::open(String8(categories_file), &tokenizer) != NO_ERROR) {
         return false;
     }
@@ -929,7 +936,7 @@ static bool setUpKernelTracing()
             for (int j = 0; j < MAX_SYS_FILES; j++) {
                 const char* path = c.sysfiles[j].path;
                 bool required = c.sysfiles[j].required == REQ;
-                if (path != NULL) {
+                if (path != nullptr) {
                     if (fileIsWritable(path)) {
                         ok &= setKernelOptionEnable(path, true);
                     } else if (required) {
@@ -954,7 +961,7 @@ static void cleanUpKernelTracing()
     setTraceOverwriteEnable(true);
     setTraceBufferSizeKB(1);
     setPrintTgidEnableIfPresent(false);
-    setKernelTraceFuncs(NULL);
+    setKernelTraceFuncs(nullptr);
     setUserInitiatedTraceProperty(false);
     
     // #ifdef VENDOR_EDIT
@@ -1118,10 +1125,10 @@ static void registerSigHandler()
     sigemptyset(&sa.sa_mask);
     sa.sa_flags = 0;
     sa.sa_handler = handleSignal;
-    sigaction(SIGHUP, &sa, NULL);
-    sigaction(SIGINT, &sa, NULL);
-    sigaction(SIGQUIT, &sa, NULL);
-    sigaction(SIGTERM, &sa, NULL);
+    sigaction(SIGHUP, &sa, nullptr);
+    sigaction(SIGINT, &sa, nullptr);
+    sigaction(SIGQUIT, &sa, nullptr);
+    sigaction(SIGTERM, &sa, nullptr);
 }
 
 static void listSupportedCategories()
@@ -1154,7 +1161,7 @@ static void listTraceOptions()
         } else {
             printf("  %15s - enable\n", list);
         }
-        list = strtok(NULL, "\n");
+        list = strtok(nullptr, "\n");
     }
     free(myList);
 
@@ -1278,16 +1285,16 @@ int main(int argc, char **argv)
         int ret;
         int option_index = 0;
         static struct option long_options[] = {
-            {"async_start",       no_argument, 0,  0 },
-            {"async_stop",        no_argument, 0,  0 },
-            {"async_dump",        no_argument, 0,  0 },
-            {"only_userspace",    no_argument, 0,  0 },
-            {"list_categories",   no_argument, 0,  0 },
-            {"stream",            no_argument, 0,  0 },
+            {"async_start",        no_argument, nullptr,  0 },
+            {"async_stop",         no_argument, nullptr,  0 },
+            {"async_dump",         no_argument, nullptr,  0 },
+            {"only_userspace",     no_argument, nullptr,  0 },
+            {"list_categories",    no_argument, nullptr,  0 },
+            {"stream",             no_argument, nullptr,  0 },
             // #ifdef VENDOR_EDIT
-            {"list_trace_options", no_argument, 0,  0 },
+            {"list_trace_options", no_argument, nullptr,  0 },
             // #endif /*VENDOR_EDIT*/
-            {           0,                  0, 0,  0 }
+            {nullptr,                        0, nullptr,  0 }
         };
 
         // #ifdef VENDOR_EDIT
